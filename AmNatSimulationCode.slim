@@ -1,0 +1,184 @@
+// This model was produced using SLiM version 3.3, for more information see https://messerlab.org/slim/ or Haller & Messer (2019) Mol. biol and evol. 36.3:632-637.
+// The following code runs a simulation for a di-allelic autosomal sexually antagonistic (SA) autosomal locus in a subdivided (Wright-island) population. The simulation begins with each allele equally represented (p = 0.5) at Hardy-Weinberg proportions and runs until one allele is lost. An output file is produced with final frquency of the male-beneficial allele, the segregation time (tim until loss) and some summary statistics of genetic variation (Fit and Fst). For full description of the model see Appendix B in Flinthem et al "Dispersal alters the nature and scope of sexually antagonistic variation" (The American Naturalist).
+
+// set up a non-Wright-Fisher model wih seperate sexes for autosomal SA locus
+initialize() {
+
+	//setSeed(1); //possibility to set seed
+	initializeSLiMModelType("nonWF");
+	initializeMutationRate(0);
+	initializeSex("A");
+	
+	initializeMutationType("m1", 0.5, "f", 1.0);		// sexually antagonistic mutant type - if present it is the male-beneficial allele
+	
+	defineConstant("N", 50);    // number of demes
+	defineConstant("KM", 5);   //number of males per deme
+	defineConstant("KF", 5);   //number of females per deme
+	defineConstant("mF", 0.1); //female dispersal rate
+	defineConstant("mM", 0.1); //male dispersal rate
+	defineConstant("HF", 0.5); //dominance of female antagonistic allele
+	defineConstant("HM", 0.5); //dominance of male antagonistic allele
+	defineConstant("CF", 0.1); //allele effect in female homozygotes
+	defineConstant("CM", 0.1); //allele effect in male homozygotes
+	defineConstant("FE", 20); // fecundity (no. eggs laid by a female)
+	defineConstant("SSL", 0);  // SA locus
+	defineConstant("FE_male", c(1-CM,1-CM*HM,1));  //fitness values by genotype (male)
+	defineConstant("FE_female", c(1,1-CF*HF,1-CF)); //fitness values by genotype (female)
+	
+	
+	// g1 genomic element type: uses m1 for all mutations
+	initializeGenomicElementType("g1", m1, 1.0);
+	
+	// set up a locus
+	initializeGenomicElement(g1, 0, 0);
+	initializeRecombinationRate(0);
+}
+
+// create a metapopulation of N demes with KM males and KF females
+1 {
+	for (i in 1:N) {
+		sim.addSubpop(i, (KM+KF));
+	}
+	//add mutants at the locus (initial frequency 0.5)
+	targets = sample(sim.subpopulations.genomes,asInteger((N*(KF+KM))));
+	targets.addNewDrawnMutation(m1, SSL);
+	sim.setValue("FST", 0.0);
+	sim.setValue("FIT", 0.0);
+}
+
+
+reproduction() {
+	//loop through demes and subset available mothers and fathers in each deme
+	for(i in seqLen(N)+1){
+		focalsubpop = sim.subpopulations[i-1];
+		mothers = sim.subpopulations.subsetIndividuals(sex = "F",tag=i);
+		fathers = sim.subpopulations.subsetIndividuals(sex = "M",tag=i);
+		//loop through mothers who each lay a clutch
+		for(j in seqAlong(mothers)){
+			clutch = rpois(1,FE);
+			//loop through clutch and sample a father for each egg (i.e. no covariance between father id for eggs in a cutch)
+			for(k in seqLen(clutch))
+				focalsubpop.addCrossed(mothers[j], sample(fathers,1));
+		}
+	}
+	// no selfing
+	self.active=0;
+}
+
+//DISPERSAL
+early() {
+	//subset females and their ids become the deme ids
+	indsF = sim.subpopulations.subsetIndividuals(sex="F");
+	subpopIDs = indsF.subpopulation.id;
+	//provide a migration weighting for females (probability of staying in own deme vs probability of moving to a different deme))
+	if(sim.generation==1){
+		indsF.tag = subpopIDs;
+	}
+	//females disperse or not probabilistically according to mf
+	if(sim.generation!=1){
+		weights = c(1.0 - mF, rep(mF / (N - 1), N - 1));
+		ids = sample(seqLen(N) + 1, indsF.size(),replace = T, weights=weights);
+		ids2 = ifelse(ids == 1, subpopIDs, ids);
+		ids = ifelse(ids == subpopIDs, 1, ids2);
+		indsF.tag = ids;
+	}
+	
+	indsM = sim.subpopulations.subsetIndividuals(sex="M");
+	subpopIDs = indsM.subpopulation.id;
+	
+	if(sim.generation==1){
+		indsM.tag = subpopIDs;
+	}
+	//males disperse or not probabilistically according to mm
+	if(sim.generation!=1){
+		weights = c(1.0 - mM, rep(mM / (N - 1), N - 1));
+		ids = sample(seqLen(N) + 1, indsM.size(),replace = T, weights=weights);
+		ids2 = ifelse(ids == 1, subpopIDs, ids);
+		ids = ifelse(ids == subpopIDs, 1, ids2);
+		indsM.tag = ids;
+	}
+
+}
+//FITNESS AND SELECTION
+early(){
+	
+	// competition/density regulation occurs within sexes in each deme, based on fitness of each individual
+	// loop through demes and pick KM males and KF females which survive, all others die
+	// assume non-overlapping generations so maxAge of survivivors=0
+	if(sim.generation!=1){
+		indsF = sim.subpopulations.subsetIndividuals(sex="F");
+		phenotypesF = indsF.sumOfMutationsOfType(m1);
+		indsM = sim.subpopulations.subsetIndividuals(sex="M");
+		phenotypesM = indsM.sumOfMutationsOfType(m1);
+		//generate individuals' competitiveness based on phenotype
+		indsF.fitnessScaling = FE_female[phenotypesF];
+		indsM.fitnessScaling = FE_male[phenotypesM];
+		
+		for(i in seqLen(N)+1){
+			inds_deme = sim.subpopulations.subsetIndividuals(tag=i);
+			juve_indsF = inds_deme[inds_deme.sex=="F"&inds_deme.age==0];
+			juve_indsM = inds_deme[inds_deme.sex=="M"&inds_deme.age==0];
+			survivorsF = sample(juve_indsF, min(KF, size(juve_indsF)), weights= juve_indsF.fitnessScaling); //sample surviving females based on competitiveness
+			survivorsM = sample(juve_indsM, min(KM, size(juve_indsM)), weights= juve_indsM.fitnessScaling); //sample surviving males 
+			// set survivor's fitness scaling to 1, all othhers to 0
+			inds_deme.fitnessScaling = 0.0; 
+			survivorsF.fitnessScaling = 1.0;
+			survivorsM.fitnessScaling = 1.0;
+		}
+	}
+}
+1: late() {
+	//FIT calculation (see equation B-1 in Appendix B):
+	//calculate heterozygosity in adults 
+	inds = sim.subpopulations.individuals;
+	freq = length(inds.genomes.mutations)/length(inds.genomes);
+	het = inds.sumOfMutationsOfType(m1)/length(inds[0].genomes);
+	het = length(het[het==0.5])/length(het);
+	//calculate FIT as 1 - observed/expected heterozygosity
+	Fit = 1 - het/(2*freq*(1-freq));
+	
+	//FST calculation (see equation B-2 in Appendix B):
+	rvec = rep(0.0,N);
+	//for each deme calculate genetic covariance between individuals in groups
+	for(i in seqLen(N)+1){
+		inds_deme = sim.subpopulations.subsetIndividuals(tag=i);
+		freqs = inds_deme.sumOfMutationsOfType(m1)/length(inds[0].genomes);
+		diff = 0.0;
+		for(k in 0:(length(inds_deme)-2))
+		{
+			for(l in (k+1):(length(inds_deme)-1))
+			{
+				diff = diff + (freqs[k]-freq)*(freqs[l]-freq);
+			}
+		}
+		rvec[i-1] = 2*diff/(length(inds_deme)*(length(inds_deme)-1));
+	}
+	//calculate mean genetic covariance within groups / p(1-p) to give FST
+	r = mean(rvec)/(freq*(1-freq));
+	
+	//Save FST and FIT each generation
+	sim.setValue("FST", c(sim.getValue("FST"),r));
+	sim.setValue("FIT", c(sim.getValue("FIT"),Fit));
+	
+	//Run simulation until one allele lost
+	if (freq ==0 | freq ==1)
+	{
+		// average FST and FIT across generations 
+		FST = mean(sim.getValue("FST")[1:(sim.generation-5)]);
+		FIT = mean(sim.getValue("FIT")[1:(sim.generation-5)]);
+		//Write output file (contains final frequency, number of generations simulation ran for, FST, and FIT)
+		writeFile("OutputFile_Demes" + N + "Sel" + CF + "D" + mF + "nF" + KF + "nM" + KM + ".txt", paste(c(paste(freq), paste(sim.generation),paste(FST),paste(FIT))),append=T);
+		sim.simulationFinished();
+	}
+
+}
+
+1000000 late()
+{
+	//Or until 1 million generations has passed (then call it a day!)
+	FST = mean(sim.getValue("FST")[1:(sim.generation-5)]);
+	FIT = mean(sim.getValue("FIT")[1:(sim.generation-5)]);
+	writeFile("OutputFile_Demes" + N + "Sel" + CF + "D" + mF + "nF" + KF + "nM" + KM + ".txt", paste(c(paste(freq), paste(sim.generation),paste(FST),paste(FIT))),append=T);
+	catn("/DidNotLose");
+	sim.simulationFinished();
+}
